@@ -1,131 +1,134 @@
 # AutoKFL
 
-Linux 커널 크래시 **Fault Localization**(결함 국소화)을 위한 멀티 에이전트 기반 자동 분석 도구입니다.  
-LangGraph로 구성된 4개 에이전트가 인간의 분석 과정(관찰 → 수집 → 분석 → 증거 종합)을 모방하여 버그 위치를 추정합니다.
+A multi-agent-based automated analysis tool for Linux kernel crash **Fault Localization**.  
+Composed of 4 agents using LangGraph, it mimics the human analysis process (observation → collection → analysis → evidence synthesis) to estimate bug locations.
 
-## 주요 기능
+## Features
 
-- **Syzkaller 연동**: [syzkaller.appspot.com](https://syzkaller.appspot.com)에서 크래시 정보·reproducer 조회
-- **커널 빌드·재현**: Linux 커널 클론, worktree 생성, 커널/이미지 빌드, C reproducer 빌드 및 재현
-- **Fault Localization (FL)**: 콜스택·faulty 코드·크래시 정보를 입력으로 LLM 에이전트가 버그 위치·원인 추정
+- **Syzkaller Integration**: Fetches crash info and reproducers from [syzkaller.appspot.com](https://syzkaller.appspot.com).
+- **Kernel Build & Reproduction**: Clones the Linux kernel, creates worktrees, builds the kernel/image, builds the C reproducer, and reproduces the crash.
+- **Fault Localization (FL)**: Uses LLM agents to estimate bug locations and root causes by analyzing the callstack, faulty code, and crash information.
 
-## 아키텍처
+## Architecture
 
-| 에이전트 | 역할 |
-|----------|------|
-| **Crash Observer** | 콜스택·CPU 컨텍스트·reproducer 관찰 및 크래시 지점 정리 |
-| **Code Collector** | 크래시 지점·관련 함수/구조체/호출 그래프·데이터 의존성 수집 |
-| **Code Analyzer** | 버그 패턴 탐지, 메모리/바운드/락 순서·포인터 별칭 등 정적 분석 |
-| **Evidence Synthesizer** | 증거 종합, 가설 일관성 검증, 신뢰도·가중치 계산, 최종 결론 도출 |
+| Agent | Role |
+|-------|------|
+| **Crash Observer** | Observes the callstack, CPU context, and reproducer, then summarizes the crash point. |
+| **Code Collector** | Collects the crash point, related functions/structs, call graphs, and data dependencies. |
+| **Code Analyzer** | Detects bug patterns and performs static analysis (memory/bounds, lock order, pointer aliasing, etc.). |
+| **Evidence Synthesizer** | Synthesizes evidence, verifies hypothesis consistency, calculates confidence/weights, and draws the final conclusion. |
 
-에이전트 간 라우팅은 조건부 엣지로 이루어지며, 필요 시 이전 단계로 돌아가 반복 분석합니다.
+Routing between agents is done using conditional edges, allowing iterative analysis by returning to previous steps when necessary.
 
-## 요구사항
+## Requirements
 
 - Python 3.10+
-- 의존성: `pexpect`, `requests`, `langgraph`, `langchain-anthropic`, `langchain-openai`, `python-dotenv`, `pydantic`, `libclang`
+- Dependencies: `pexpect`, `requests`, `langgraph`, `langchain-anthropic`, `langchain-openai`, `langchain-google-genai`, `python-dotenv`, `pydantic`, `libclang`
 
 ## Installation
 
-1. 저장소 클론 후 프로젝트 루트에서:
+1. Clone the repository and run the following in the project root:
 
 ```bash
 pip install -e .
 ```
 
-2. API 키 설정: 프로젝트 루트에 `.env` 파일을 만들고 사용할 LLM에 맞는 키를 설정합니다.
+2. Set API Keys: Create a `.env` file in the project root and set the keys for the LLM you want to use.
 
 ```bash
-# OpenAI (--model gpt 사용 시)
+# OpenAI (when using --model gpt)
 OPENAI_API_KEY=sk-...
 
-# Anthropic (--model claude 사용 시)
+# Anthropic (when using --model claude)
 ANTHROPIC_API_KEY=sk-ant-...
+
+# Google (when using --model gemini)
+GOOGLE_API_KEY=...
 ```
 
 ## Usage
 
-### CLI 인자
+### CLI Arguments
 
-| 인자 | 설명 |
-|------|------|
-| `--workdir` | 작업 디렉터리 경로 (필수) |
-| `--task` | 실행할 작업 (필수) |
-| `--crash_id` | Syzkaller 크래시 ID 또는 `DUMMY` (필수) |
-| `--model` | FL용 LLM: `gpt` 또는 `claude` (기본값: `gpt`) |
-| `--qemu_ssh` | QEMU SSH 사용 (플래그) |
-| `--run_qemu` | QEMU 실행 (플래그) |
+| Argument | Description |
+|----------|-------------|
+| `--workdir` | Working directory path (Required) |
+| `--task` | Task to execute (Required) |
+| `--crash_id` | Syzkaller crash ID or `DUMMY` (Required) |
+| `--model` | LLM for FL: `gpt`, `claude`, or `gemini` (Default: `gemini`) |
+| `--qemu_ssh` | Use QEMU SSH (Flag) |
+| `--run_qemu` | Run QEMU (Flag) |
 
-### 작업(task)별 실행
+### Execution by Task
 
-작업은 보통 아래 순서로 진행합니다.
+Tasks are usually executed in the following order:
 
 ```bash
-# 1. Linux 커널 클론 (crash_id는 사용하지 않음, DUMMY 등 아무 값 가능)
+# 1. Clone Linux kernel (crash_id is not used, any value like DUMMY is fine)
 python main.py --workdir ./workdir/ --task clone_linux --crash_id DUMMY
 
-# 2. 크래시 정보 확인 후 커널 빌드 (reproducible인 경우만 빌드됨)
+# 2. Check crash info and build kernel (built only if reproducible)
 python main.py --workdir ./workdir/ --task build_kernel --crash_id <CRASH_EXTID>
 
-# 3. 디스크 이미지 빌드
+# 3. Build disk image
 python main.py --workdir ./workdir/ --task build_image --crash_id DUMMY
 
-# 4. C reproducer 다운로드
+# 4. Download C reproducer
 python main.py --workdir ./workdir/ --task get_crepro --crash_id <CRASH_EXTID>
 
-# 5. C reproducer 빌드
+# 5. Build C reproducer
 python main.py --workdir ./workdir/ --task build_crash --crash_id <CRASH_EXTID>
 
-# 6. 크래시 재현
+# 6. Reproduce crash
 python main.py --workdir ./workdir/ --task repro_crash --crash_id DUMMY
 
-# 7. Fault Localization (FL) — workdir에 callstack.json, repro.c, crash_info.json 필요
-python main.py --workdir ./workdir/ --task fl --crash_id <CRASH_EXTID> --model gpt
-# 또는
+# 7. Fault Localization (FL) — requires callstack.json, repro.c, and crash_info.json in the workdir
+python main.py --workdir ./workdir/ --task fl --crash_id <CRASH_EXTID> --model gemini
+# or
 python main.py --workdir ./workdir/ --task fl --crash_id <CRASH_EXTID> --model claude
 ```
 
-### Fault Localization 입력 파일
+### Fault Localization Input Files
 
-`--task fl` 실행 시 **workdir**에 다음 파일이 있어야 합니다. (실행 시 `workdir`으로 `chdir` 후 이 경로들을 참조합니다.)
+When running `--task fl`, the following files must exist in the **workdir**. (The script changes directory to `workdir` during execution and references these paths.)
 
-- `callstack.json` — 파싱된 콜스택
-- `repro.c` — C reproducer (또는 faulty code)
-- `crash_info.json` — Syzkaller 크래시 메타데이터
+- `callstack.json` — Parsed callstack
+- `repro.c` — C reproducer (or faulty code)
+- `crash_info.json` — Syzkaller crash metadata
 
-예시:
+Example:
 
 ```bash
-python main.py --workdir ./workdir/ --task fl --crash_id 803e4cb8245b52928347 --model gpt
+python main.py --workdir ./workdir/ --task fl --crash_id 803e4cb8245b52928347 --model gemini
 ```
 
-## 프로젝트 구조
+## Project Structure
 
 ```
 autokfl/
-├── main.py                 # CLI 진입점
-├── setup.py                # 패키지 설치 (pip install -e .)
-├── agent_design.md         # 에이전트 역할·도구·입출력 설계 (있을 경우)
+├── main.py                 # CLI entry point
+├── setup.py                # Package installation (pip install -e .)
+├── agent_design.md         # Agent role, tool, I/O design (if any)
 ├── autokfl/
-│   ├── autokfl.py          # Autokfl 클래스, LangGraph 워크플로우
-│   ├── codebase.py         # Codebase/코드 블록 데이터 구조
-│   ├── util.py             # 커널 클론·빌드·repro 재현 등 유틸
-│   ├── qemu.py             # QEMU 관련
-│   ├── fault_localizer.py  # Fault localization 보조
-│   ├── agent/              # 4개 에이전트 (crash_observer, code_collector, code_analyzer, evidence_synthesizer)
-│   ├── state/              # AnalysisState 등 상태 정의
-│   ├── prompt/             # 에이전트별 프롬프트 (prompt_co, prompt_cc, prompt_ca, prompt_es)
-│   └── tool/               # 에이전트용 도구 (callstack, CFG, taint, 신뢰도, 버그 패턴 등)
+│   ├── autokfl.py          # Autokfl class, LangGraph workflow
+│   ├── codebase.py         # Codebase / code block data structures
+│   ├── util.py             # Utilities for kernel clone/build, repro, etc.
+│   ├── qemu.py             # QEMU related functions
+│   ├── fault_localizer.py  # Fault localization helper
+│   ├── agent/              # 4 agents (crash_observer, code_collector, code_analyzer, evidence_synthesizer)
+│   ├── state/              # State definitions like AnalysisState
+│   ├── prompt/             # Prompts for each agent
+│   └── tool/               # Agent tools (callstack, CFG, taint, confidence, bug patterns, etc.)
 ```
 
 ## TODO
-- 여러 아키텍처로 autokfl을 구현하고, 결과를 비교
-    - 자율 라우팅
-    - 오케스트레이터 방식
-    - debate/critic
-    - sequential
-- 긴 컨텍스트 처리
-- race condition fault localization으로 특화
+- Implement autokfl with various architectures and compare results
+    - Autonomous routing
+    - Orchestrator approach
+    - Debate/critic
+    - Sequential
+- Long context handling
+- Specialization in race condition fault localization
 
-## 라이선스
+## License
 TBD
